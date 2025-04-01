@@ -1,33 +1,15 @@
 package websocket
 
 import (
-	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
-	"sync"
 )
 
 type (
-	Server struct{}
-
-	Conn struct {
-		net.Conn
-
-		wmu  sync.Mutex
-		wbuf []byte
-
-		rmu  sync.Mutex
-		rbuf []byte
-
-		st, end int // unparsed data in rbuf
-	}
-
 	FlusherError interface {
 		FlushError() error
 	}
@@ -39,21 +21,56 @@ type (
 	flusher struct {
 		Flusher
 	}
+
+	HeaderBits [2]byte
+
+	FrameMeta struct {
+		HeaderBits
+		Status Status
+		Key    [4]byte
+		Length int
+	}
+
+	Status uint16
 )
 
 const (
-	FIN        = 0x80
-	OpcodeMask = 0xf
+	StatusOK Status = 1000 + iota
+	StatusGoingAway
+	StatusProtocol
+	StatusCantAccept
+	_
 
-	Masked   = 0x80
-	Len7Mask = 0x7f
+	_
+	_
+	StatusFormat
+	StatusPolicy
+	StatusTooBig
 
-	Len16 = 128 - 2
-	Len64 = 128 - 1
+	StatusExtensions
+	StatusInternal
+	_
+	_
+	_
 
-	MaxLen7  = 128 - 3
-	MaxLen16 = 1<<16 - 1
-	MaxLen64 = 1<<62 - 1
+	_
+)
+
+const (
+	// first byte
+	fin        = 0x80
+	opcodeMask = 0xf
+
+	// second byte
+	masked   = 0x80
+	len7Mask = 0x7f
+
+	len16 = 128 - 2
+	len64 = 128 - 1
+
+	maxLen7  = 128 - 3
+	maxLen16 = 1<<16 - 1
+	maxLen64 = 1<<62 - 1
 
 	// Non-control frames
 	FrameContinue = 0
@@ -73,206 +90,142 @@ var (
 	ErrExtraData    = errors.New("extra data in request")
 )
 
-func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http.Request) (*Conn, error) {
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		return nil, ErrNotHijacker
+func (f *FrameMeta) Parse(b []byte, st int) (i, end int) {
+	f.Status = 0
+	f.Key = [4]byte{}
+	f.Length = 0
+
+	i = f.HeaderBits.Parse(b, st)
+	if i < 0 {
+		return st, i
 	}
 
-	var key []byte
-
-	h := req.Header
-
-	if v := h.Get("Connection"); v != "Upgrade" {
-		return nil, ErrNotWebsocket
-	}
-	if v := h.Get("Upgrade"); v != "websocket" {
-		return nil, ErrNotWebsocket
-	}
-	if v := h.Get("Sec-WebSocket-Version"); v != "13" {
-		return nil, ErrNotWebsocket
+	f.Length, i = f.HeaderBits.ParseLen(b, i)
+	if i < 0 {
+		return st, i
 	}
 
-	if v := h.Get("Sec-WebSocket-Key"); v == "" {
-		return nil, ErrProtocol
-	} else if x, err := base64.URLEncoding.DecodeString(v); err != nil {
-		return nil, fmt.Errorf("decode Sec-Key: %w", err)
-	} else {
-		key = x
+	if f.Masked() {
+		i = f.HeaderBits.ReadMaskingKey(b, i, f.Key[:])
+		if i < 0 {
+			return st, i
+		}
 	}
 
-	key = append(key, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"...)
-	sum := sha1.Sum(key)
-	accept := base64.URLEncoding.EncodeToString(sum[:])
-
-	h = w.Header()
-
-	h.Set("Connection", "Upgrade")
-	h.Set("Upgrade", "websocket")
-	h.Set("Sec-WebSocket-Accept", accept)
-
-	w.WriteHeader(http.StatusSwitchingProtocols)
-
-	c, buf, err := hj.Hijack()
-	if err != nil {
-		return nil, fmt.Errorf("hijack: %w", err)
+	if f.Opcode() == FrameClose && i+2 <= len(b) && f.Length >= 2 {
+		f.Status = Status(binary.BigEndian.Uint16(b[i:]))
 	}
 
-	if buf.Reader.Buffered() != 0 || buf.Writer.Buffered() != 0 {
-		return nil, ErrExtraData
-	}
-
-	wc := &Conn{
-		Conn: c,
-	}
-
-	return wc, nil
+	return i, i + f.Length
 }
 
-func (c *Conn) Write(p []byte) (int, error) {
-	defer c.wmu.Unlock()
-	c.wmu.Lock()
+func (f *FrameMeta) Read(p, b []byte, st int) (n, i int) {
+	if st+int(f.Length) > len(b) {
+		return 0, -1
+	}
 
-	b := c.wbuf
+	n = copy(p, b[st:st+int(f.Length)])
 
-	var l7 byte
+	if f.HeaderBits.Masked() {
+		f.Mask(p[:n])
+	}
+
+	return n, st + n
+}
+
+func (f *FrameMeta) Mask(p []byte) {
+	for i := range len(p) {
+		p[i] ^= f.Key[i&3]
+	}
+}
+
+func (f *HeaderBits) Parse(b []byte, st int) int {
+	if st+2 > len(b) {
+		*f = HeaderBits{}
+		return -1
+	}
+
+	f[0] = b[st]
+	f[1] = b[st+1]
+
+	return st + 2
+}
+
+func (f HeaderBits) ParseLen(b []byte, st int) (l, i int) {
+	l = f.len7()
+	i = st
 
 	switch {
-	case len(p) <= MaxLen7:
-		l7 = byte(len(p))
-	case len(p) <= MaxLen16:
-		l7 = Len16
-	case len(p) <= MaxLen64:
-		l7 = Len64
-	default:
-		panic(len(p))
-	}
-
-	b = append(b, FIN|FrameText, l7)
-
-	switch l7 {
-	case Len16:
-		b = binary.BigEndian.AppendUint16(b, uint16(len(p)))
-	case Len64:
-		b = binary.BigEndian.AppendUint64(b, uint64(len(p)))
-	}
-
-	b = append(b, p...)
-
-	c.wbuf = b[:0]
-
-	n, err := c.Conn.Write(b)
-	if err != nil {
-		return n, err
-	}
-
-	return n, nil
-}
-
-func (c *Conn) Read(p []byte) (n int, err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
-
-	for {
-		opcode, st, end := c.decodeFrame(c.rbuf[:c.end], c.st)
-		if end < 0 {
-			c.rbuf = grow(c.rbuf, c.end+32)
-
-			m, err := c.Conn.Read(c.rbuf[c.end:])
-			c.end += m
-			if err != nil {
-				return 0, err
-			}
-
-			if c.end == len(c.rbuf) && c.st >= len(c.rbuf)/2 {
-				m = copy(c.rbuf, c.rbuf[c.st:c.end])
-				c.st, c.end = 0, m
-			}
-
-			continue
-		}
-
-		switch opcode {
-		case FrameText, FrameBinary:
-		default:
-			panic(opcode)
-		}
-
-		if end > st+len(p) {
-			return 0, io.ErrShortBuffer
-		}
-
-		n = copy(p, c.rbuf[st:end])
-		c.st = end
-	}
-}
-
-func (c *Conn) decodeFrame(b []byte, st int) (opcode, i, end int) {
-	i, end = st, -1
-
-	if i+2 > len(b) {
-		return
-	}
-
-	opcode = int(b[i] & OpcodeMask)
-
-	switch opcode {
-	case FrameText, FrameBinary:
-	default:
-		panic(b[i])
-	}
-	i++
-
-	masked := b[i]&Masked != 0
-
-	l := int(b[i] & Len7Mask)
-	i++
-
-	switch {
-	case l <= MaxLen7:
+	case l <= maxLen7:
 		// l is fine already
-	case l == Len16:
+	case l == len16:
 		if i+2 > len(b) {
-			return
+			return l, -1
 		}
 
 		l = int(binary.BigEndian.Uint16(b[i:]))
 		i += 2
-	case l == Len64:
+	case l == len64:
 		if i+8 > len(b) {
-			return
+			return l, -1
 		}
 
-		l = int(binary.BigEndian.Uint64(b[i:]))
+		x := binary.BigEndian.Uint64(b[i:])
+		l = int(x)
 		i += 8
+
+		if uint64(l) != x {
+			panic("too big frame")
+		}
 	default:
 		panic(l)
 	}
 
-	if masked && i+4 > len(b) {
-		return
-	}
-
-	var key [4]byte
-
-	if masked {
-		i += copy(key[:], b[i:])
-	}
-
-	if i+l > len(b) {
-		return
-	}
-
-	if masked {
-		for j := range l {
-			b[i+j] ^= key[j&3]
-		}
-	}
-
-	return opcode, i, i + l
+	return l, i
 }
 
+func (f HeaderBits) ReadMaskingKey(b []byte, st int, key []byte) (i int) {
+	if st+4 > len(b) {
+		return -1
+	}
+
+	return st + copy(key, b[st:st+4])
+}
+
+func (f HeaderBits) Fin() bool {
+	return f[0]&fin != 0
+}
+
+func (f HeaderBits) Opcode() int {
+	return int(f[0] & opcodeMask)
+}
+
+func (f HeaderBits) Masked() bool {
+	return f[1]&masked != 0
+}
+
+func (f HeaderBits) len7() int {
+	return int(f[1] & len7Mask)
+}
+
+func (s Status) Error() string { return fmt.Sprintf("status:%d", int(s)) }
+
 func (f flusher) FlushError() error { f.Flush(); return nil }
+
+func secKeyHash(key string) string {
+	const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+	h := sha1.New()
+
+	_, _ = h.Write([]byte(key))
+	_, _ = h.Write([]byte(guid))
+
+	var sum [sha1.Size]byte
+
+	h.Sum(sum[:0])
+
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
 
 func grow(b []byte, n int) []byte {
 	if n > cap(b) {
@@ -280,4 +233,11 @@ func grow(b []byte, n int) []byte {
 	}
 
 	return b[:cap(b)]
+}
+
+func closer(c io.Closer, errp *error, msg string) {
+	err := c.Close()
+	if *errp == nil && err != nil {
+		*errp = fmt.Errorf("%v: %w", msg, err)
+	}
 }
