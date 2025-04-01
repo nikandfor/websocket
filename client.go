@@ -1,12 +1,14 @@
 package websocket
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 )
@@ -14,7 +16,13 @@ import (
 type (
 	Client struct {
 		Header http.Header
-		Client http.Client
+
+		Dialer    net.Dialer
+		TLSDialer tls.Dialer
+	}
+
+	DialerContext interface {
+		DialContext(ctx context.Context, net, addr string) (net.Conn, error)
 	}
 )
 
@@ -68,10 +76,33 @@ func (c *Client) NewRequest(ctx context.Context, rurl string) (*http.Request, er
 	return req, nil
 }
 
-func (c *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *http.Response, error) {
-	resp, err := c.Client.Do(req)
+func (cl *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *http.Response, error) {
+	var d DialerContext
+
+	switch req.URL.Scheme {
+	case "http":
+		d = &cl.Dialer
+	case "https":
+		d = &cl.TLSDialer
+	default:
+		return nil, nil, fmt.Errorf("unsupported scheme: %v", req.URL.Scheme)
+	}
+
+	c, err := d.DialContext(ctx, "tcp", req.URL.Host)
 	if err != nil {
-		return nil, nil, fmt.Errorf("do request: %w", err)
+		return nil, nil, fmt.Errorf("dial: %w", err)
+	}
+
+	err = req.Write(c)
+	if err != nil {
+		return nil, nil, fmt.Errorf("write request: %w", err)
+	}
+
+	r := bufio.NewReader(c)
+
+	resp, err := http.ReadResponse(r, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
@@ -93,15 +124,14 @@ func (c *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *http
 		return nil, resp, fmt.Errorf("sec-accept mismatch")
 	}
 
-	rwc, ok := resp.Body.(io.ReadWriteCloser)
-	if !ok {
-		return nil, resp, fmt.Errorf("body type is not usable: %T", resp.Body)
-	}
-
 	conn := &Conn{
-		rwc: rwc,
+		Conn: c,
 
 		client: 1,
+	}
+
+	if r.Buffered() != 0 {
+		conn.r = r
 	}
 
 	return conn, resp, nil

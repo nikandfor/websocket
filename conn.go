@@ -1,17 +1,20 @@
 package websocket
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"sync"
 )
 
 type (
 	Conn struct {
-		rwc io.ReadWriteCloser
+		net.Conn
+		r *bufio.Reader
 
 		client byte
 
@@ -73,7 +76,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 
 	c.wbuf = b[:0]
 
-	_, err := c.rwc.Write(b)
+	_, err := c.Conn.Write(b)
 	if err != nil {
 		return len(p), err
 	}
@@ -105,7 +108,7 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 
 			c.rbuf = grow(c.rbuf, c.end+more)
 
-			m, err := c.rwc.Read(c.rbuf[c.end:])
+			m, err := c.read(c.rbuf[c.end:])
 			c.end += m
 			if err != nil {
 				return 0, err
@@ -181,16 +184,31 @@ func (c *Conn) Close() error {
 
 func (c *Conn) writeClose(b []byte) (err error) {
 	defer func() {
-		e := c.rwc.Close()
+		e := c.Conn.Close()
 		if err == nil && e != nil {
 			err = fmt.Errorf("close conn: %w", e)
 		}
 	}()
 
-	_, err = c.rwc.Write(b)
+	_, err = c.Conn.Write(b)
 	if err != nil {
 		return fmt.Errorf("write close frame: %w", err)
 	}
 
 	return nil
+}
+
+func (c *Conn) read(p []byte) (n int, err error) {
+	if c.r != nil {
+		end := min(len(p), c.r.Buffered())
+
+		n, err = c.r.Read(p[:end])
+		if c.r.Buffered() == 0 {
+			c.r = nil
+		}
+
+		return n, err
+	}
+
+	return c.Conn.Read(p)
 }

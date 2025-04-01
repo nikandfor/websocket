@@ -89,7 +89,7 @@ func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http
 	}
 
 	wc := &Conn{
-		rwc: c,
+		Conn: c,
 	}
 
 	return wc, nil
