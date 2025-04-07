@@ -85,7 +85,7 @@ func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http
 	}
 
 	if buf.Reader.Buffered() != 0 || buf.Writer.Buffered() != 0 {
-		return nil, ErrExtraData
+		return nil, ErrTrailingData
 	}
 
 	wc := &Conn{

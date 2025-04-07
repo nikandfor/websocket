@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -76,7 +77,7 @@ func (c *Client) NewRequest(ctx context.Context, rurl string) (*http.Request, er
 	return req, nil
 }
 
-func (cl *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *http.Response, error) {
+func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn, resp *http.Response, err error) {
 	var d DialerContext
 
 	switch req.URL.Scheme {
@@ -93,6 +94,8 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *htt
 		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
 
+	defer closerOnErr(c, &err)
+
 	err = req.Write(c)
 	if err != nil {
 		return nil, nil, fmt.Errorf("write request: %w", err)
@@ -100,7 +103,7 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *htt
 
 	r := bufio.NewReader(c)
 
-	resp, err := http.ReadResponse(r, req)
+	resp, err = http.ReadResponse(r, req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
@@ -124,15 +127,32 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (*Conn, *htt
 		return nil, resp, fmt.Errorf("sec-accept mismatch")
 	}
 
-	conn := &Conn{
+	conn = &Conn{
 		Conn: c,
 
 		client: 1,
 	}
 
-	if r.Buffered() != 0 {
-		conn.r = r
+	if n := r.Buffered(); n != 0 {
+		conn.preread(n)
+
+		m, err := r.Read(conn.rbuf[:n])
+		conn.end = m
+		if err != nil {
+			return nil, resp, fmt.Errorf("flush buffer")
+		}
+		if m != n {
+			return nil, resp, fmt.Errorf("flush buffer: read %d of %d", m, n)
+		}
 	}
 
 	return conn, resp, nil
+}
+
+func closerOnErr(c io.Closer, errp *error) {
+	if *errp == nil {
+		return
+	}
+
+	_ = c.Close()
 }

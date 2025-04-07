@@ -10,28 +10,14 @@ import (
 )
 
 type (
-	FlusherError interface {
-		FlushError() error
-	}
-
-	Flusher interface {
-		Flush()
-	}
-
-	flusher struct {
-		Flusher
-	}
-
 	HeaderBits [2]byte
 
-	FrameMeta struct {
-		HeaderBits
-		Status Status
-		Key    [4]byte
-		Length int
-	}
-
 	Status uint16
+
+	StatusText struct {
+		Status Status
+		Text   string
+	}
 )
 
 const (
@@ -58,7 +44,7 @@ const (
 
 const (
 	// first byte
-	fin        = 0x80
+	finbit     = 0x80
 	opcodeMask = 0xf
 
 	// second byte
@@ -84,59 +70,28 @@ const (
 )
 
 var (
-	ErrNotWebsocket = errors.New("not websocket")
-	ErrProtocol     = errors.New("protocol error")
+	//	ErrClosed       = errors.New("attempt to write to closed connection")
 	ErrNotHijacker  = errors.New("response is not hijacker")
-	ErrExtraData    = errors.New("extra data in request")
+	ErrNotWebsocket = errors.New("not websocket")
+	ErrProtocol     = StatusProtocol
+	ErrTrailingData = errors.New("trailing data in request")
 )
 
-func (f *FrameMeta) Parse(b []byte, st int) (i, end int) {
-	f.Status = 0
-	f.Key = [4]byte{}
-	f.Length = 0
-
-	i = f.HeaderBits.Parse(b, st)
-	if i < 0 {
-		return st, i
-	}
-
-	f.Length, i = f.HeaderBits.ParseLen(b, i)
-	if i < 0 {
-		return st, i
-	}
-
-	if f.Masked() {
-		i = f.HeaderBits.ReadMaskingKey(b, i, f.Key[:])
-		if i < 0 {
-			return st, i
-		}
-	}
-
-	if f.Opcode() == FrameClose && i+2 <= len(b) && f.Length >= 2 {
-		f.Status = Status(binary.BigEndian.Uint16(b[i:]))
-	}
-
-	return i, i + f.Length
-}
-
-func (f *FrameMeta) Read(p, b []byte, st int) (n, i int) {
-	if st+int(f.Length) > len(b) {
-		return 0, -1
-	}
-
-	n = copy(p, b[st:st+int(f.Length)])
-
-	if f.HeaderBits.Masked() {
-		f.Mask(p[:n])
-	}
-
-	return n, st + n
-}
-
-func (f *FrameMeta) Mask(p []byte) {
+func maskBuf(p []byte, key [4]byte) {
 	for i := range len(p) {
-		p[i] ^= f.Key[i&3]
+		p[i] ^= key[i&3]
 	}
+}
+
+func MakeHeaderBits(op int, final, masked bool) HeaderBits {
+	var h HeaderBits
+
+	h[0] = byte(op) & opcodeMask
+	if final {
+		h[0] |= finbit
+	}
+
+	return h
 }
 
 func (f *HeaderBits) Parse(b []byte, st int) int {
@@ -193,7 +148,7 @@ func (f HeaderBits) ReadMaskingKey(b []byte, st int, key []byte) (i int) {
 }
 
 func (f HeaderBits) Fin() bool {
-	return f[0]&fin != 0
+	return f[0]&finbit != 0
 }
 
 func (f HeaderBits) Opcode() int {
@@ -208,9 +163,8 @@ func (f HeaderBits) len7() int {
 	return int(f[1] & len7Mask)
 }
 
-func (s Status) Error() string { return fmt.Sprintf("status:%d", int(s)) }
-
-func (f flusher) FlushError() error { f.Flush(); return nil }
+func (s Status) Error() string      { return fmt.Sprintf("status:%d", int(s)) }
+func (s *StatusText) Error() string { return fmt.Sprintf("status:%d %v", int(s.Status), s.Text) }
 
 func secKeyHash(key string) string {
 	const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
