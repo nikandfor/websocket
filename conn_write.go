@@ -40,14 +40,16 @@ func (c *Conn) WriteFrame(p []byte, op byte, final bool) (int, error) {
 		b = binary.BigEndian.AppendUint64(b, uint64(len(p)))
 	}
 
+	if c.client != 0 {
+		b = append(b, 0, 0, 0, 0)
+		_, _ = rand.Read(b[len(b)-4:])
+	}
+
 	payload := len(b)
 	b = append(b, p...)
 
 	if c.client != 0 {
-		var key [4]byte
-		_, _ = rand.Read(key[:])
-
-		maskBuf(p[payload:], key)
+		maskBuf(b[payload:], [4]byte(b[payload-4:payload]))
 	}
 
 	c.wbuf = b[:0]
@@ -80,7 +82,7 @@ func (c *Conn) Close() (err error) {
 
 	_, err = c.Conn.Write(c.wbuf[:2])
 	if err != nil {
-		return fmt.Errorf("write close frame")
+		return fmt.Errorf("write close frame: %w", err)
 	}
 
 	return nil
@@ -102,10 +104,15 @@ func (c *Conn) processClose() error {
 		return io.EOF
 	}
 
-	err := c.bufferFrame(c.more)
-	if err != nil {
-		return err
+	size := min(c.more, 128)
+
+	for c.i+size > c.end {
+		err := c.read()
+		if err != nil {
+			return err
+		}
 	}
+
 	if c.more == 1 {
 		return fmt.Errorf("wtf close data: %x", c.rbuf[c.i])
 	}
@@ -115,7 +122,7 @@ func (c *Conn) processClose() error {
 		return Status(status)
 	}
 
-	text := c.rbuf[c.i+2 : c.i+c.more]
+	text := c.rbuf[c.i+2 : c.i+size]
 
 	return &StatusText{
 		Status: Status(status),

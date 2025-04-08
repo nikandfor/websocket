@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type (
@@ -89,7 +90,12 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 		return nil, nil, fmt.Errorf("unsupported scheme: %v", req.URL.Scheme)
 	}
 
-	c, err := d.DialContext(ctx, "tcp", req.URL.Host)
+	host := req.URL.Host
+	if req.URL.Port() == "" {
+		host = net.JoinHostPort(host, req.URL.Scheme)
+	}
+
+	c, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
@@ -115,10 +121,10 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 	h := resp.Header
 	accept := secKeyHash(req.Header.Get("Sec-WebSocket-Key"))
 
-	if q := h.Get("Connection"); q != "Upgrade" {
+	if q := h.Get("Connection"); strings.ToLower(q) != "upgrade" {
 		return nil, resp, fmt.Errorf("didn't upgrade: %v", q)
 	}
-	if q := h.Get("Upgrade"); q != "websocket" {
+	if q := h.Get("Upgrade"); strings.ToLower(q) != "websocket" {
 		return nil, resp, fmt.Errorf("upgraded protocol mismatch: %v", q)
 	}
 	if q := h.Get("Sec-WebSocket-Accept"); q == "" {
@@ -134,7 +140,7 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 	}
 
 	if n := r.Buffered(); n != 0 {
-		conn.preread(n)
+		conn.rbuf = grow(conn.rbuf, min(n, minReadBuf))
 
 		m, err := r.Read(conn.rbuf[:n])
 		conn.end = m

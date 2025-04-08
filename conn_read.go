@@ -1,9 +1,12 @@
 package websocket
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type (
@@ -25,6 +28,19 @@ type (
 		key    [4]byte
 	}
 )
+
+const minReadBuf = 0x1000
+
+func (c *Conn) ReadContext(ctx context.Context, p []byte) (n int, err error) {
+	if d, ok := c.Conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+		defer Stopper(ctx, d.SetReadDeadline)
+	}
+
+	n, err = c.Read(p)
+	err = FixError(ctx, err)
+
+	return n, err
+}
 
 func (c *Conn) Read(p []byte) (n int, err error) {
 	defer c.rmu.Unlock()
@@ -52,7 +68,12 @@ loop:
 		}
 	}
 
-	return c.readFrame(p, false)
+	n, err = c.readFrame(p, false)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+
+	return n, err
 }
 
 func (c *Conn) ReadFrameHeader() (op int, fin bool, l int, err error) {
@@ -84,28 +105,6 @@ func (c *Conn) readFrameHeader() (op int, fin bool, l int, err error) {
 			return 0, false, l, err
 		}
 	}
-}
-
-func (c *Conn) read() error {
-	if len(c.rbuf) == 0 {
-		c.rbuf = make([]byte, 0x1000)
-	}
-
-	if c.i < c.end/2 {
-		n := copy(c.rbuf, c.rbuf[c.i:c.end])
-		c.st -= n
-		c.i -= n
-		c.end -= n
-	}
-
-	if c.end == len(c.rbuf) {
-		panic(c.end)
-	}
-
-	n, err := c.Conn.Read(c.rbuf[c.end:])
-	c.end += n
-
-	return err
 }
 
 func (c *Conn) ReadFrame(p []byte) (n int, err error) {
@@ -147,29 +146,6 @@ func (c *Conn) readFrame(p []byte, full bool) (n int, err error) {
 	}
 }
 
-func (c *Conn) BufferFrame(n int) (err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
-
-	return c.bufferFrame(n)
-}
-
-func (c *Conn) bufferFrame(n int) (err error) {
-	n = min(n, c.more)
-
-	for c.i+n > c.end {
-		c.preread(n)
-
-		m, err := c.Conn.Read(c.rbuf[c.end:])
-		c.end += m
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l int, i int) {
 	i = st
 	if i+2 > len(b) {
@@ -193,17 +169,66 @@ func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l i
 	return h, l, i
 }
 
-func (c *Conn) preread(l int) {
-	if c.st >= c.end/2 {
-		off := c.i
-
-		copy(c.rbuf, c.rbuf[off:c.end])
-		c.st -= off
-		c.i -= off
-		c.end -= off
+func (c *Conn) read() error {
+	if len(c.rbuf) == 0 {
+		c.rbuf = make([]byte, minReadBuf)
 	}
 
-	more := max(0x400, l)
+	if c.i < c.end/2 {
+		n := copy(c.rbuf, c.rbuf[c.i:c.end])
+		c.st -= n
+		c.i -= n
+		c.end -= n
+	}
 
-	c.rbuf = grow(c.rbuf, c.end+more)
+	if c.end == len(c.rbuf) {
+		panic(c.end)
+	}
+
+	n, err := c.Conn.Read(c.rbuf[c.end:])
+	c.end += n
+
+	return err
+}
+
+func Stopper(ctx context.Context, dead func(time.Time) error) func() {
+	donec := make(chan struct{})
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-donec:
+			return
+		}
+
+		select {
+		case <-donec:
+			return
+		default:
+		}
+
+		_ = dead(time.Unix(1, 0))
+	}()
+
+	return func() {
+		close(donec)
+	}
+}
+
+func FixError(ctx context.Context, err error) error {
+	if isTimeout(err) {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		default:
+		}
+	}
+
+	return err
+}
+
+func isTimeout(err error) bool {
+	to, ok := err.(interface{ Timeout() bool })
+
+	return ok && to.Timeout()
 }
