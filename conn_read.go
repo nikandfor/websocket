@@ -24,8 +24,9 @@ type (
 		st, i, end int // unparsed data in rbuf
 
 		header HeaderBits
-		more   int
 		key    [4]byte
+
+		start, more int
 	}
 )
 
@@ -68,7 +69,7 @@ loop:
 		}
 	}
 
-	n, err = c.readFrame(p, false)
+	n, err = c.readFrame(p)
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}
@@ -76,14 +77,14 @@ loop:
 	return n, err
 }
 
-func (c *Conn) ReadFrameHeader() (op int, fin bool, l int, err error) {
+func (c *Conn) ReadFrameHeader() (op byte, fin bool, l int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
 	return c.readFrameHeader()
 }
 
-func (c *Conn) readFrameHeader() (op int, fin bool, l int, err error) {
+func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
 	if c.more != 0 {
 		c.i += c.more
 	}
@@ -92,8 +93,10 @@ func (c *Conn) readFrameHeader() (op int, fin bool, l int, err error) {
 
 	for {
 		h, l, i := c.parseFrameHeader(c.rbuf[:c.end], c.st, c.key[:])
+		//	log.Printf("frame header %x %v %v  c %v %v %v %v  data %v %v", h, l, i, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
 		if i > 0 {
 			c.header = h
+			c.start = i
 			c.more = l
 			c.i = i
 
@@ -111,24 +114,25 @@ func (c *Conn) ReadFrame(p []byte) (n int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
-	return c.readFrame(p, false)
+	return c.readFrame(p)
 }
 
-func (c *Conn) readFrame(p []byte, full bool) (n int, err error) {
+func (c *Conn) readFrame(p []byte) (n int, err error) {
 	if c.more == 0 {
 		return 0, io.EOF
 	}
 
 	for {
+		//	log.Printf("read frame %v %v %v %v  data %v %v", c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
 		if c.i < c.end {
 			end := min(c.end, c.i+c.more)
 
 			m := copy(p[n:], c.rbuf[c.i:end])
+			maskBuf(p[n:n+m], c.key, c.i-c.start)
 			n += m
 			c.i += m
 			c.more -= m
-		}
-		if !full || n == len(p) || c.more == 0 {
+
 			return n, csel(c.more == 0, io.EOF, nil)
 		}
 
@@ -154,7 +158,7 @@ func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l i
 
 	i += copy(h[:], b[i:])
 
-	l, i = h.ParseLen(c.rbuf[i:], i)
+	l, i = h.ParseLen(c.rbuf[st:], i)
 	if i < 0 {
 		return h, 0, -1
 	}
@@ -174,11 +178,13 @@ func (c *Conn) read() error {
 		c.rbuf = make([]byte, minReadBuf)
 	}
 
-	if c.i < c.end/2 {
-		n := copy(c.rbuf, c.rbuf[c.i:c.end])
-		c.st -= n
-		c.i -= n
-		c.end -= n
+	if c.i >= c.end/2 {
+		off := c.i
+
+		copy(c.rbuf, c.rbuf[off:c.end])
+		c.st -= off
+		c.i -= off
+		c.end -= off
 	}
 
 	if c.end == len(c.rbuf) {

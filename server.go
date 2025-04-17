@@ -7,17 +7,26 @@ import (
 )
 
 type (
-	Server struct{}
+	Server struct {
+		Handler Handler
+	}
+
+	Handler = func(ctx context.Context, c *Conn) error
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	var err error
+	hs, err := s.ServeHandler(w, req, s.Handler)
+	if !hs && err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+}
+
+func (s *Server) ServeHandler(w http.ResponseWriter, req *http.Request, h Handler) (handshake bool, err error) {
 	ctx := req.Context()
 
 	c, err := s.Handshake(ctx, w, req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("handshake: %v", err), http.StatusBadRequest)
-		return
+		return false, fmt.Errorf("handshake: %w", err)
 	}
 
 	defer func() {
@@ -30,21 +39,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	defer closer(c, &err, "close conn")
 
-	buf := make([]byte, 1024)
-
-	for {
-		n, err := c.Read(buf)
-		if err != nil {
-			err = fmt.Errorf("read: %w", err)
-			return
-		}
-
-		_, err = c.Write(buf[:n])
-		if err != nil {
-			err = fmt.Errorf("write: %w", err)
-			return
-		}
-	}
+	return true, h(ctx, c)
 }
 
 func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http.Request) (*Conn, error) {

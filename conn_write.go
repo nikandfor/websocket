@@ -49,7 +49,7 @@ func (c *Conn) WriteFrame(p []byte, op byte, final bool) (int, error) {
 	b = append(b, p...)
 
 	if c.client != 0 {
-		maskBuf(b[payload:], [4]byte(b[payload-4:payload]))
+		maskBuf(b[payload:], [4]byte(b[payload-4:payload]), 0)
 	}
 
 	c.wbuf = b[:0]

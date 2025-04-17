@@ -77,9 +77,9 @@ var (
 	ErrTrailingData = errors.New("trailing data in request")
 )
 
-func maskBuf(p []byte, key [4]byte) {
+func maskBuf(p []byte, key [4]byte, off int) {
 	for i := range len(p) {
-		p[i] ^= key[i&3]
+		p[i] ^= key[(off+i)&3]
 	}
 }
 
@@ -151,8 +151,8 @@ func (f HeaderBits) Fin() bool {
 	return f[0]&finbit != 0
 }
 
-func (f HeaderBits) Opcode() int {
-	return int(f[0] & opcodeMask)
+func (f HeaderBits) Opcode() byte {
+	return f[0] & opcodeMask
 }
 
 func (f HeaderBits) Masked() bool {

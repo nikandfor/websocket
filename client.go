@@ -49,9 +49,9 @@ func (c *Client) NewRequest(ctx context.Context, rurl string) (*http.Request, er
 	}
 
 	switch u.Scheme {
-	case "ws":
+	case "ws", "http":
 		u.Scheme = "http"
-	case "wss":
+	case "wss", "https":
 		u.Scheme = "https"
 	default:
 		return nil, fmt.Errorf("unsupported scheme: %v", u.Scheme)
