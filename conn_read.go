@@ -2,9 +2,12 @@ package websocket
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -14,6 +17,9 @@ type (
 		net.Conn
 
 		client byte
+
+		writerClosed bool
+		readerClosed bool
 
 		wmu  sync.Mutex
 		wbuf []byte
@@ -47,26 +53,18 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
-loop:
-	for {
-		op, _, _, err := c.readFrameHeader()
-		if err != nil {
-			return 0, err
+	if c.more != 0 {
+		n, err = c.readFrame(p)
+		if errors.Is(err, io.EOF) {
+			err = nil
 		}
 
-		switch op {
-		case FrameContinue,
-			FrameBinary,
-			FrameText:
-			break loop
-		case FramePing:
-			c.processPing()
-		case FramePong:
-		case FrameClose:
-			return 0, c.processClose()
-		default:
-			panic(op)
-		}
+		return n, err
+	}
+
+	_, _, _, err = c.readDataFrameHeader()
+	if err != nil {
+		return 0, err
 	}
 
 	n, err = c.readFrame(p)
@@ -81,10 +79,42 @@ func (c *Conn) ReadFrameHeader() (op byte, fin bool, l int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
+	return c.readDataFrameHeader()
+}
+
+func (c *Conn) ReadRawFrameHeader() (op byte, fin bool, l int, err error) {
+	defer c.rmu.Unlock()
+	c.rmu.Lock()
+
 	return c.readFrameHeader()
 }
 
+func (c *Conn) readDataFrameHeader() (op byte, fin bool, l int, err error) {
+	for {
+		op, fin, l, err = c.readFrameHeader()
+		if err != nil {
+			return op, fin, l, err
+		}
+
+		switch op {
+		case FrameContinue, FrameText, FrameBinary:
+			return op, fin, l, nil
+		case FramePing:
+			c.processPing()
+		case FramePong:
+		case FrameClose:
+			return op, false, 0, c.processClose()
+		default:
+			return op, false, 0, errors.New("invalid frame")
+		}
+	}
+}
+
 func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
+	if c.readerClosed {
+		return 0, true, 0, io.EOF
+	}
+
 	if c.more != 0 {
 		c.i += c.more
 	}
@@ -93,7 +123,7 @@ func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
 
 	for {
 		h, l, i := c.parseFrameHeader(c.rbuf[:c.end], c.st, c.key[:])
-		//	log.Printf("frame header %x %v %v  c %v %v %v %v  data %v %v", h, l, i, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
+		//	log.Printf("frame header h,l,i %x %v %v   c.st,i,end,len %v %v %v %v   data %v %v", h, l, i, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
 		if i > 0 {
 			c.header = h
 			c.start = i
@@ -117,37 +147,57 @@ func (c *Conn) ReadFrame(p []byte) (n int, err error) {
 	return c.readFrame(p)
 }
 
-func (c *Conn) readFrame(p []byte) (n int, err error) {
+func (c *Conn) AppendReadFrame(b []byte) ([]byte, error) {
+	defer c.rmu.Unlock()
+	c.rmu.Lock()
+
+	return c.appendFrame(b, c.more)
+}
+
+func (c *Conn) AppendReadFrameLimit(b []byte, limit int) ([]byte, error) {
+	defer c.rmu.Unlock()
+	c.rmu.Lock()
+
+	return c.appendFrame(b, min(c.more, limit-len(b)))
+}
+
+func (c *Conn) readFrame(p []byte) (int, error) {
+	res, err := c.appendFrame(p[:0], len(p))
+	return len(res), err
+}
+
+func (c *Conn) appendFrame(p []byte, more int) (_ []byte, err error) {
 	if c.more == 0 {
-		return 0, io.EOF
+		return p, io.EOF
 	}
 
-	for {
-		//	log.Printf("read frame %v %v %v %v  data %v %v", c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
+	n := len(p)
+	more = min(more, c.more)
+	p = slices.Grow(p, more)
+	p = p[:len(p)+more]
+
+	var m int
+
+	for more != 0 {
+		//	log.Printf("read %v %v %v  more %v %v  n/len %v %v", c.start, c.i, c.end, more, c.more, n, len(p))
 		if c.i < c.end {
-			end := min(c.end, c.i+c.more)
-
-			m := copy(p[n:], c.rbuf[c.i:end])
-			maskBuf(p[n:n+m], c.key, c.i-c.start)
-			n += m
-			c.i += m
-			c.more -= m
-
-			return n, csel(c.more == 0, io.EOF, nil)
-		}
-
-		if len(p[n:]) < 0x400 {
-			err = c.read()
+			end := min(c.end, c.i+more)
+			m = copy(p[n:], c.rbuf[c.i:end])
 		} else {
-			var m int
-			m, err = c.Conn.Read(p[n : n+c.more])
-			n += m
-			c.more -= m
+			m, err = c.Conn.Read(p[n : n+more])
+			if err != nil {
+				return p[:n], err
+			}
 		}
-		if err != nil {
-			return n, err
-		}
+
+		maskBuf(p[n:n+m], c.key, c.i-c.start)
+		n += m
+		more -= m
+		c.i += m
+		c.more -= m
 	}
+
+	return p[:n], csel(c.more == 0, io.EOF, nil)
 }
 
 func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l int, i int) {
@@ -171,6 +221,44 @@ func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l i
 	}
 
 	return h, l, i
+}
+
+func (c *Conn) processClose() (err error) {
+	c.readerClosed = true
+
+	if c.more == 0 {
+		return io.EOF
+	}
+
+	if c.more == 1 {
+		return fmt.Errorf("wtf close data: %x", c.rbuf[c.i])
+	}
+
+	size := min(c.more, 128)
+
+	c.rbuf, err = c.appendFrame(c.rbuf[:c.end], size)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+
+	status := binary.BigEndian.Uint16(c.rbuf[c.end:])
+	if len(c.rbuf[c.end:]) == 2 {
+		if Status(status) == StatusOK {
+			return io.EOF
+		}
+
+		return Status(status)
+	}
+
+	text := c.rbuf[c.end+2 : c.end+size]
+
+	return &StatusText{
+		Status: Status(status),
+		Text:   string(text),
+	}
 }
 
 func (c *Conn) read() error {

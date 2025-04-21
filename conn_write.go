@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"io"
 )
 
 func (c *Conn) Write(p []byte) (int, error) {
@@ -15,6 +14,10 @@ func (c *Conn) WriteFrame(p []byte, op byte, final bool) (int, error) {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
 
+	return c.writeFrame(p, op, final)
+}
+
+func (c *Conn) writeFrame(p []byte, op byte, final bool) (int, error) {
 	b := c.wbuf
 	finb := csel[byte](final, finbit, 0)
 
@@ -68,6 +71,9 @@ func (c *Conn) WriteFrame(p []byte, op byte, final bool) (int, error) {
 }
 
 func (c *Conn) Close() (err error) {
+	defer c.wmu.Unlock()
+	c.wmu.Lock()
+
 	defer func() {
 		e := c.Conn.Close()
 		if err == nil && e != nil {
@@ -75,8 +81,11 @@ func (c *Conn) Close() (err error) {
 		}
 	}()
 
-	defer c.wmu.Unlock()
-	c.wmu.Lock()
+	if c.writerClosed {
+		return nil
+	}
+
+	c.writerClosed = true
 
 	c.wbuf = append(c.wbuf, FrameClose|finbit, c.client*masked)
 
@@ -88,6 +97,33 @@ func (c *Conn) Close() (err error) {
 	return nil
 }
 
+func (c *Conn) CloseWriter(status Status) (err error) {
+	defer c.wmu.Unlock()
+	c.wmu.Lock()
+
+	return c.closeWriter(status)
+}
+
+func (c *Conn) closeWriter(status Status) (err error) {
+	if c.writerClosed {
+		return nil
+	}
+
+	c.writerClosed = true
+
+	if status == 0 {
+		status = 1000
+	}
+
+	body := []byte{byte(status >> 8), byte(status)}
+
+	//	log.Printf("close writer %x (%[1]d)  % x", int(status), body)
+
+	_, err = c.writeFrame(body, FrameClose, true)
+
+	return err
+}
+
 func (c *Conn) processPing() error {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
@@ -97,37 +133,6 @@ func (c *Conn) processPing() error {
 	_, err := c.Conn.Write(c.rbuf[c.st : c.i+c.more])
 
 	return err
-}
-
-func (c *Conn) processClose() error {
-	if c.more == 0 {
-		return io.EOF
-	}
-
-	size := min(c.more, 128)
-
-	for c.i+size > c.end {
-		err := c.read()
-		if err != nil {
-			return err
-		}
-	}
-
-	if c.more == 1 {
-		return fmt.Errorf("wtf close data: %x", c.rbuf[c.i])
-	}
-
-	status := binary.BigEndian.Uint16(c.rbuf[c.i:])
-	if c.more == 2 {
-		return Status(status)
-	}
-
-	text := c.rbuf[c.i+2 : c.i+size]
-
-	return &StatusText{
-		Status: Status(status),
-		Text:   string(text),
-	}
 }
 
 func csel[T any](c bool, x, y T) T {

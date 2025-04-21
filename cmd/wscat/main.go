@@ -85,8 +85,6 @@ func clientRun(c *cli.Command) (err error) {
 
 	defer closer(conn, &err, "close conn")
 
-	orig := conn.Conn
-
 	if tlog.If("dump") {
 		conn.Conn = &Dumper{conn.Conn}
 	}
@@ -94,9 +92,14 @@ func clientRun(c *cli.Command) (err error) {
 	tlog.Printw("connection established")
 
 	loc2rem := func(ctx context.Context) (err error) {
-		defer DeferredCloseWriter(orig, &err, "close writer")
+		defer func() {
+			e := conn.CloseWriter(websocket.StatusOK)
+			if err == nil && e != nil {
+				err = errors.Wrap(e, "close writer")
+			}
+		}()
 
-		b := make([]byte, 1024)
+		b := make([]byte, 32)
 
 		for {
 			//	n, err := hnet.Read(ctx, os.Stdin, b)
@@ -106,6 +109,10 @@ func clientRun(c *cli.Command) (err error) {
 			}
 			if err != nil {
 				return errors.Wrap(err, "read stdin")
+			}
+
+			for n != 0 && b[n-1] == '\n' {
+				n--
 			}
 
 			m, err := conn.WriteFrame(b[:n], websocket.FrameText, true)
@@ -119,7 +126,7 @@ func clientRun(c *cli.Command) (err error) {
 	}
 
 	rem2loc := func(ctx context.Context) error {
-		b := make([]byte, 1024)
+		var b []byte
 
 		for {
 			op, fin, l, err := conn.ReadFrameHeader()
@@ -129,36 +136,23 @@ func clientRun(c *cli.Command) (err error) {
 			if err != nil {
 				return errors.Wrap(err, "read header")
 			}
-			if l+10 > len(b) {
-				b = append(b, make([]byte, l+10-cap(b))...)
-				b = b[:cap(b)]
+
+			b, err = conn.AppendReadFrame(b[:0])
+			if err != nil && !errors.Is(err, io.EOF) {
+				return errors.Wrap(err, "read frame")
 			}
 
-			n := 0
-
-			for {
-				m, err := conn.ReadFrame(b[n:])
-				n += m
-				if errors.Is(err, io.EOF) {
-					err = nil
-					break
-				}
-				if err != nil {
-					return errors.Wrap(err, "read frame")
-				}
-			}
-			if n != l {
-				return errors.New("read frame %d of %d", n, l)
+			if len(b) != l {
+				panic(len(b))
 			}
 
-			if n == 0 || b[n-1] != '\n' {
-				b[n] = '\n'
-				n++
+			if len(b) != 0 && b[len(b)-1] != '\n' {
+				b = append(b, '\n')
 			}
 
 			_, _ = op, fin
 
-			os.Stdout.Write(b[:n])
+			os.Stdout.Write(b)
 		}
 	}
 
@@ -242,6 +236,9 @@ func Echo(ctx context.Context, c *websocket.Conn) error {
 
 	for {
 		op, fin, l, err := c.ReadFrameHeader()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("read frame header: %w", err)
 		}
@@ -260,6 +257,7 @@ func Echo(ctx context.Context, c *websocket.Conn) error {
 					return fmt.Errorf("write: %w", err)
 				}
 
+				op = websocket.FrameContinue
 				total += n
 			}
 			if errors.Is(err, io.EOF) {
@@ -317,24 +315,6 @@ func (d *Dumper) Close() (err error) {
 	tlog.Printw("close conn", "err", err)
 
 	return err
-}
-
-func DeferredCloseWriter(c any, errp *error, msg string) {
-	err := CloseWriter(c)
-	if *errp == nil && err != nil {
-		*errp = fmt.Errorf("%v: %w", msg, err)
-	}
-}
-
-func CloseWriter(c any) error {
-	cw, ok := c.(interface {
-		CloseWrite() error
-	})
-	if !ok {
-		return nil
-	}
-
-	return cw.CloseWrite()
 }
 
 func closer(c io.Closer, errp *error, msg string) {
