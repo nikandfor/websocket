@@ -123,7 +123,8 @@ func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
 
 	for {
 		h, l, i := c.parseFrameHeader(c.rbuf[:c.end], c.st, c.key[:])
-		//	log.Printf("frame header h,l,i %x %v %v   c.st,i,end,len %v %v %v %v   data %v %v", h, l, i, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
+		//	log.Printf("frame header h,l,i %x %x %x   c.st,i,end,len %x %x %x %x   data %x %x", h, l, i, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
+		//	log.Printf("rbuf\n%s", hex.Dump(c.rbuf[:c.end]))
 		if i > 0 {
 			c.header = h
 			c.start = i
@@ -208,7 +209,7 @@ func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l i
 
 	i += copy(h[:], b[i:])
 
-	l, i = h.ParseLen(c.rbuf[st:], i)
+	l, i = h.ParseLen(c.rbuf, i)
 	if i < 0 {
 		return h, 0, -1
 	}
