@@ -35,8 +35,6 @@ type (
 		start int // start of the frame in rbuf, needed for masking offset calculation
 		more  int // more bytes to read in frame
 	}
-
-// dbgfn func(args ...any)
 )
 
 const (
@@ -229,7 +227,7 @@ func (c *Conn) appendFrame(p []byte, more int) (p0 []byte, err error) {
 	return p[:n], csel(c.more == 0, io.EOF, nil)
 }
 
-func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l int, i int) {
+func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l, i int) {
 	i = st
 	if i+2 > len(b) {
 		return h, 0, -1
@@ -368,7 +366,9 @@ func isTimeout(err error) bool {
 }
 
 /*
-func (c *Conn) debug(name string) dbgfn {
+type dbgfn func(args ...any)
+
+func (c *Conn) debug(name string) dbgfn { //nolint:unused
 	log.Printf("%-14v >  st/i/end: %3x %3x %3x  rbuf %3x  start/more: %3x %3x", name, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
 
 	return func(args ...any) {

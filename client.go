@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -34,10 +35,12 @@ func (c *Client) DialContext(ctx context.Context, rurl string) (*Conn, error) {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
 
-	conn, _, err := c.Handshake(ctx, req)
+	conn, resp, err := c.Handshake(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("handshake: %w", err)
 	}
+
+	_ = resp.Body.Close()
 
 	return conn, nil
 }
@@ -61,7 +64,7 @@ func (c *Client) NewRequest(ctx context.Context, rurl string) (*http.Request, er
 	_, _ = rand.Read(key)
 	key64 := base64.StdEncoding.EncodeToString(key)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
@@ -128,9 +131,9 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 		return nil, resp, fmt.Errorf("upgraded protocol mismatch: %v", q)
 	}
 	if q := h.Get("Sec-WebSocket-Accept"); q == "" {
-		return nil, resp, fmt.Errorf("no sec-accept in response")
+		return nil, resp, errors.New("no sec-accept in response")
 	} else if q != accept {
-		return nil, resp, fmt.Errorf("sec-accept mismatch")
+		return nil, resp, errors.New("sec-accept mismatch")
 	}
 
 	conn = &Conn{
@@ -145,7 +148,7 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 		m, err := r.Read(conn.rbuf[:n])
 		conn.end = m
 		if err != nil {
-			return nil, resp, fmt.Errorf("flush buffer")
+			return nil, resp, errors.New("flush buffer")
 		}
 		if m != n {
 			return nil, resp, fmt.Errorf("flush buffer: read %d of %d", m, n)

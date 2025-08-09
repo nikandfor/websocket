@@ -43,11 +43,11 @@ const (
 )
 
 const (
-	// first byte
+	// first byte.
 	finbit     = 0x80
 	opcodeMask = 0xf
 
-	// second byte
+	// second byte.
 	masked   = 0x80
 	len7Mask = 0x7f
 
@@ -58,12 +58,12 @@ const (
 	maxLen16 = 1<<16 - 1
 	maxLen64 = 1<<62 - 1
 
-	// Non-control frames
+	// Non-control frames.
 	FrameContinue = 0
 	FrameText     = 1
 	FrameBinary   = 2
 
-	// Control Frames
+	// Control Frames.
 	FrameClose = 0x8
 	FramePing  = 0x9
 	FramePong  = 0xa
@@ -78,7 +78,7 @@ var (
 )
 
 func maskBuf(p []byte, key [4]byte, off int) {
-	for i := range len(p) {
+	for i := range p {
 		p[i] ^= key[(off+i)&3]
 	}
 }
@@ -126,10 +126,10 @@ func (f HeaderBits) ParseLen(b []byte, st int) (l, i int) {
 		}
 
 		x := binary.BigEndian.Uint64(b[i:])
-		l = int(x)
+		l = int(x) //nolint:gosec
 		i += 8
 
-		if uint64(l) != x {
+		if uint64(l) != x { //nolint:gosec
 			panic("too big frame")
 		}
 	default:

@@ -15,16 +15,22 @@ type FakeConn struct {
 	net.Conn
 }
 
-func FuzzWriteRead(f *testing.F) {
-	f.Add(32, []byte("first."), []byte("second_second."), []byte("third_third_third"))
-	f.Add(32, []byte("first."), []byte("second_second_second_second."), make([]byte, 128))
+func FuzzWriteRead(f *testing.F) { //nolint:gocognit
+	f.Add(32, 1, []byte("first."), []byte("second_second."), []byte("third_third_third"))
+	f.Add(32, 256, []byte("first."), []byte("second_second_second_second."), make([]byte, 128))
 
-	f.Fuzz(func(t *testing.T, buf int, m0, m1, m2 []byte) {
-		if buf < minReadBufSize || buf > 0x1000 {
+	f.Fuzz(func(t *testing.T, cbuf, rbuf int, m0, m1, m2 []byte) {
+		if cbuf < minReadBufSize || cbuf > 0x1000 {
+			return
+		}
+		if rbuf < 1 || rbuf > 0x1000 {
+			return
+		}
+		if len(m0)+len(m1)+len(m2) > 0x100000 {
 			return
 		}
 
-		to := make([]byte, 0x2000)
+		to := make([]byte, len(m0)+len(m1)+len(m2)+0x100)
 		var ton [5]int
 
 		var c FakeConn
@@ -35,7 +41,7 @@ func FuzzWriteRead(f *testing.F) {
 
 		r := &Conn{
 			Conn: &c,
-			rbuf: make([]byte, buf),
+			rbuf: make([]byte, cbuf),
 		}
 
 		for i, m := range [][]byte{m0, m1, m2} {
@@ -44,21 +50,17 @@ func FuzzWriteRead(f *testing.F) {
 				t.Errorf("write %d: %v/%v %v", i, nw, len(m), err)
 			}
 
-			nr, err := r.Read(to[ton[i]:])
+			nr, err := r.Read(to[ton[i]:min(ton[i]+rbuf, len(to))])
 			ton[i+1] = ton[i] + nr
 			if err != nil && !errors.Is(err, io.EOF) {
 				t.Errorf("read  %d: %v", i, err)
 			}
-
-			//	t.Logf("to: %q (%d)", to[ton[i]:ton[i+1]], nr)
-			//	t.Logf("r: %#v", r)
-			//	t.Logf("c: %#v", c)
 		}
 
 		ton[4] = ton[3]
 
-		for range 10 {
-			n, err := r.Read(to[ton[4]:])
+		for range 0x100000 {
+			n, err := r.Read(to[ton[4]:min(ton[4]+rbuf, len(to))])
 			ton[4] += n
 			if errors.Is(err, io.EOF) {
 				break
@@ -66,10 +68,6 @@ func FuzzWriteRead(f *testing.F) {
 			if err != nil {
 				t.Errorf("read aft: %v", err)
 			}
-
-			//	t.Logf("to: %q (%d)", to[ton[3]:ton[4]], ton[4]-ton[3])
-			//	t.Logf("r: %#v", r)
-			//	t.Logf("c: %#v", c)
 		}
 
 		off := 0
@@ -97,6 +95,8 @@ func FuzzWriteRead(f *testing.F) {
 		}
 
 		if t.Failed() {
+			t.Logf("conn buffer %4x  read buffer %4x", cbuf, rbuf)
+
 			for i, m := range [][]byte{m0, m1, m2} {
 				t.Logf("message%d: %q (%d)", i, m, len(m))
 			}

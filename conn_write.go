@@ -38,7 +38,7 @@ func (c *Conn) writeFrame(p []byte, op byte, final bool) (int, error) {
 
 	switch l7 {
 	case len16:
-		b = binary.BigEndian.AppendUint16(b, uint16(len(p)))
+		b = binary.BigEndian.AppendUint16(b, uint16(len(p))) //nolint:gosec
 	case len64:
 		b = binary.BigEndian.AppendUint64(b, uint64(len(p)))
 	}

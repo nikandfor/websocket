@@ -19,6 +19,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	hs, err := s.ServeHandler(w, req, s.Handler)
 	if !hs && err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 }
 
