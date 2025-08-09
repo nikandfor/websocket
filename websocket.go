@@ -163,8 +163,10 @@ func (f HeaderBits) len7() int {
 	return int(f[1] & len7Mask)
 }
 
+func (s Status) OK() bool           { return s == StatusOK }
 func (s Status) Error() string      { return fmt.Sprintf("status:%d", int(s)) }
 func (s *StatusText) Error() string { return fmt.Sprintf("status:%d %v", int(s.Status), s.Text) }
+func (s *StatusText) Unwrap() error { return s.Status }
 
 func secKeyHash(key string) string {
 	const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"

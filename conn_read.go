@@ -32,11 +32,17 @@ type (
 		header HeaderBits
 		key    [4]byte
 
-		start, more int
+		start int // start of the frame in rbuf, needed for masking offset calculation
+		more  int // more bytes to read in frame
 	}
+
+	dbgfn func(args ...any)
 )
 
-const minReadBuf = 0x1000
+const (
+	defaultReadBufSize = 0x1000
+	minReadBufSize     = 0x20
+)
 
 func (c *Conn) ReadContext(ctx context.Context, p []byte) (n int, err error) {
 	if d, ok := c.Conn.(interface{ SetReadDeadline(time.Time) error }); ok {
@@ -52,6 +58,10 @@ func (c *Conn) ReadContext(ctx context.Context, p []byte) (n int, err error) {
 func (c *Conn) Read(p []byte) (n int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
+
+	//	defer func(f dbgfn) {
+	//		f(n, err)
+	//	}(c.debug("Read"))
 
 	if c.more != 0 {
 		n, err = c.readFrame(p)
@@ -134,7 +144,10 @@ func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
 			return h.Opcode(), h.Fin(), l, nil
 		}
 
-		err = c.read()
+		n, err := c.read()
+		if n != 0 && errors.Is(err, io.EOF) {
+			continue
+		}
 		if err != nil {
 			return 0, false, l, err
 		}
@@ -167,7 +180,11 @@ func (c *Conn) readFrame(p []byte) (int, error) {
 	return len(res), err
 }
 
-func (c *Conn) appendFrame(p []byte, more int) (_ []byte, err error) {
+func (c *Conn) appendFrame(p []byte, more int) (p0 []byte, err error) {
+	//	defer func(f dbgfn) {
+	//		f(len(p0), err)
+	//	}(c.debug("appendFrame"))
+
 	if c.more == 0 {
 		return p, io.EOF
 	}
@@ -181,14 +198,22 @@ func (c *Conn) appendFrame(p []byte, more int) (_ []byte, err error) {
 
 	for more != 0 {
 		//	log.Printf("read %v %v %v  more %v %v  n/len %v %v", c.start, c.i, c.end, more, c.more, n, len(p))
-		if c.i < c.end {
+		switch {
+		case c.i < c.end:
 			end := min(c.end, c.i+more)
 			m = copy(p[n:], c.rbuf[c.i:end])
-		} else {
+		case more >= len(c.rbuf)-0x10:
 			m, err = c.Conn.Read(p[n : n+more])
-			if err != nil {
+			if err != nil && !errors.Is(err, io.EOF) {
 				return p[:n], err
 			}
+		default:
+			nread, err := c.read()
+			if err != nil && !errors.Is(err, io.EOF) || nread == 0 {
+				return p[:n], err
+			}
+
+			continue
 		}
 
 		maskBuf(p[n:n+m], c.key, c.i-c.start)
@@ -262,28 +287,39 @@ func (c *Conn) processClose() (err error) {
 	}
 }
 
-func (c *Conn) read() error {
-	if len(c.rbuf) == 0 {
-		c.rbuf = make([]byte, minReadBuf)
+func (c *Conn) read() (n int, err error) {
+	//	defer func(f dbgfn) {
+	//		f(n, err)
+	//	}(c.debug("read"))
+
+	if len(c.rbuf) < minReadBufSize {
+		c.rbuf = make([]byte, defaultReadBufSize)
 	}
 
 	if c.i >= c.end/2 {
 		off := c.i
 
-		copy(c.rbuf, c.rbuf[off:c.end])
+		if off < c.end {
+			copy(c.rbuf, c.rbuf[off:c.end])
+		}
+
 		c.st -= off
 		c.i -= off
 		c.end -= off
+		c.start -= off
 	}
 
-	if c.end == len(c.rbuf) {
+	if c.end < 0 {
+		c.end = 0
+	}
+	if c.end >= len(c.rbuf) {
 		panic(c.end)
 	}
 
-	n, err := c.Conn.Read(c.rbuf[c.end:])
+	n, err = c.Conn.Read(c.rbuf[c.end:])
 	c.end += n
 
-	return err
+	return n, err
 }
 
 func Stopper(ctx context.Context, dead func(time.Time) error) func() {
@@ -327,3 +363,19 @@ func isTimeout(err error) bool {
 
 	return ok && to.Timeout()
 }
+
+/*
+func (c *Conn) debug(name string) dbgfn {
+	log.Printf("%-14v >  st/i/end: %3x %3x %3x  rbuf %3x  start/more: %3x %3x", name, c.st, c.i, c.end, len(c.rbuf), c.start, c.more)
+
+	return func(args ...any) {
+		log.Printf("%-14v <  st/i/end: %3x %3x %3x  rbuf %3x  start/more: %3x %3x  ret %v  from %v", name, c.st, c.i, c.end, len(c.rbuf), c.start, c.more, args, caller(2))
+	}
+}
+
+func caller(d int) string {
+	_, file, line, _ := runtime.Caller(d + 1)
+
+	return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+}
+*/

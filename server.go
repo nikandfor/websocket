@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -29,17 +30,22 @@ func (s *Server) ServeHandler(w http.ResponseWriter, req *http.Request, h Handle
 		return false, fmt.Errorf("handshake: %w", err)
 	}
 
+	handshake = true
+
 	defer func() {
 		if err == nil {
 			return
 		}
 
-		_ = err
+		var s Status
+		if errors.As(err, &s) && s.OK() {
+			err = nil
+		}
 	}()
 
 	defer closer(c, &err, "close conn")
 
-	return true, h(ctx, c)
+	return handshake, h(ctx, c)
 }
 
 func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http.Request) (*Conn, error) {

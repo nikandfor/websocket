@@ -140,7 +140,7 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 	}
 
 	if n := r.Buffered(); n != 0 {
-		conn.rbuf = grow(conn.rbuf, min(n, minReadBuf))
+		conn.rbuf = grow(conn.rbuf, min(n, defaultReadBufSize))
 
 		m, err := r.Read(conn.rbuf[:n])
 		conn.end = m
