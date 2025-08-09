@@ -36,7 +36,7 @@ type (
 		more  int // more bytes to read in frame
 	}
 
-	dbgfn func(args ...any)
+// dbgfn func(args ...any)
 )
 
 const (
@@ -110,7 +110,10 @@ func (c *Conn) readDataFrameHeader() (op byte, fin bool, l int, err error) {
 		case FrameContinue, FrameText, FrameBinary:
 			return op, fin, l, nil
 		case FramePing:
-			c.processPing()
+			err = c.processPing()
+			if err != nil {
+				return op, false, 0, err
+			}
 		case FramePong:
 		case FrameClose:
 			return op, false, 0, c.processClose()

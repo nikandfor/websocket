@@ -71,6 +71,8 @@ func dial() (*websocket.Conn, error){
 
 // or
 func manual() (*websocket.Conn, error){
+    var cl websocket.Client
+
     req, err := cl.NewRequest(ctx, "ws://some-host/some/path?and=params")
     // if err != nil ...
 
