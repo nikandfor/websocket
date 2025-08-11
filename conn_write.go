@@ -10,16 +10,16 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return c.WriteFrame(p, FrameBinary, true)
 }
 
-func (c *Conn) WriteFrame(p []byte, op byte, final bool) (int, error) {
+func (c *Conn) WriteFrame(p []byte, op Opcode, final bool) (int, error) {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
 
 	return c.writeFrame(p, op, final)
 }
 
-func (c *Conn) writeFrame(p []byte, op byte, final bool) (int, error) {
+func (c *Conn) writeFrame(p []byte, op Opcode, final bool) (int, error) {
 	b := c.wbuf
-	finb := csel[byte](final, finbit, 0)
+	finb := csel[Opcode](final, finbit, 0)
 
 	var l7 byte
 
@@ -34,7 +34,7 @@ func (c *Conn) writeFrame(p []byte, op byte, final bool) (int, error) {
 		panic(len(p))
 	}
 
-	b = append(b, op&opcodeMask|finb, c.client*masked|l7)
+	b = append(b, byte(op&opcodeMask|finb), c.client*masked|l7)
 
 	switch l7 {
 	case len16:
@@ -87,7 +87,7 @@ func (c *Conn) Close() (err error) {
 
 	c.writerClosed = true
 
-	c.wbuf = append(c.wbuf, FrameClose|finbit, c.client*masked)
+	c.wbuf = append(c.wbuf, byte(FrameClose|finbit), c.client*masked)
 
 	_, err = c.Conn.Write(c.wbuf[:2])
 	if err != nil {
@@ -128,7 +128,7 @@ func (c *Conn) processPing() error {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
 
-	c.rbuf[c.st] = c.rbuf[c.st]&0xf0 | FramePong
+	c.rbuf[c.st] = c.rbuf[c.st]&^opcodeMask | byte(FramePong)
 
 	_, err := c.Conn.Write(c.rbuf[c.st : c.i+c.more])
 

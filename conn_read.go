@@ -83,21 +83,21 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (c *Conn) ReadFrameHeader() (op byte, fin bool, l int, err error) {
+func (c *Conn) ReadFrameHeader() (op Opcode, fin bool, l int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
 	return c.readDataFrameHeader()
 }
 
-func (c *Conn) ReadRawFrameHeader() (op byte, fin bool, l int, err error) {
+func (c *Conn) ReadRawFrameHeader() (op Opcode, fin bool, l int, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
 	return c.readFrameHeader()
 }
 
-func (c *Conn) readDataFrameHeader() (op byte, fin bool, l int, err error) {
+func (c *Conn) readDataFrameHeader() (op Opcode, fin bool, l int, err error) {
 	for {
 		op, fin, l, err = c.readFrameHeader()
 		if err != nil {
@@ -121,7 +121,7 @@ func (c *Conn) readDataFrameHeader() (op byte, fin bool, l int, err error) {
 	}
 }
 
-func (c *Conn) readFrameHeader() (op byte, fin bool, l int, err error) {
+func (c *Conn) readFrameHeader() (op Opcode, fin bool, l int, err error) {
 	if c.readerClosed {
 		return 0, true, 0, io.EOF
 	}

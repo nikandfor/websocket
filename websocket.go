@@ -12,6 +12,7 @@ import (
 type (
 	HeaderBits [2]byte
 
+	Opcode byte
 	Status uint16
 
 	StatusText struct {
@@ -59,14 +60,14 @@ const (
 	maxLen64 = 1<<62 - 1
 
 	// Non-control frames.
-	FrameContinue = 0
-	FrameText     = 1
-	FrameBinary   = 2
+	FrameContinue Opcode = 0
+	FrameText     Opcode = 1
+	FrameBinary   Opcode = 2
 
 	// Control Frames.
-	FrameClose = 0x8
-	FramePing  = 0x9
-	FramePong  = 0xa
+	FrameClose Opcode = 0x8
+	FramePing  Opcode = 0x9
+	FramePong  Opcode = 0xa
 )
 
 var (
@@ -151,8 +152,12 @@ func (f HeaderBits) Fin() bool {
 	return f[0]&finbit != 0
 }
 
-func (f HeaderBits) Opcode() byte {
-	return f[0] & opcodeMask
+func (f HeaderBits) Opcode() Opcode {
+	return Opcode(f[0] & opcodeMask)
+}
+
+func (f HeaderBits) IsDataFrame() bool {
+	return f.Opcode() < 8
 }
 
 func (f HeaderBits) Masked() bool {
