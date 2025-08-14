@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 type (
@@ -58,10 +59,10 @@ func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http
 	var key string
 	h := req.Header
 
-	if v := h.Get("Connection"); v != "Upgrade" {
+	if v := h.Get("Connection"); !strings.EqualFold(v, "Upgrade") {
 		return nil, ErrNotWebsocket
 	}
-	if v := h.Get("Upgrade"); v != "websocket" {
+	if v := h.Get("Upgrade"); !strings.EqualFold(v, "websocket") {
 		return nil, ErrNotWebsocket
 	}
 	if v := h.Get("Sec-WebSocket-Version"); v != "13" {
