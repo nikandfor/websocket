@@ -101,10 +101,17 @@ func (c *Conn) CloseWriter(status Status) (err error) {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
 
-	return c.closeWriter(status)
+	return c.closeWriter(status, nil)
 }
 
-func (c *Conn) closeWriter(status Status) (err error) {
+func (c *Conn) CloseWriterBody(status Status, body []byte) (err error) {
+	defer c.wmu.Unlock()
+	c.wmu.Lock()
+
+	return c.closeWriter(status, body)
+}
+
+func (c *Conn) closeWriter(status Status, msg []byte) (err error) {
 	if c.writerClosed {
 		return nil
 	}
@@ -115,7 +122,7 @@ func (c *Conn) closeWriter(status Status) (err error) {
 		status = 1000
 	}
 
-	body := []byte{byte(status >> 8), byte(status)}
+	body := append([]byte{byte(status >> 8), byte(status)}, msg...)
 
 	//	log.Printf("close writer %x (%[1]d)  % x", int(status), body)
 

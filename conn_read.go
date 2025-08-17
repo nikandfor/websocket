@@ -83,47 +83,47 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (c *Conn) ReadFrameHeader() (op Opcode, fin bool, l int, err error) {
+func (c *Conn) ReadFrameHeader() (op Opcode, l int, fin bool, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
 	return c.readDataFrameHeader()
 }
 
-func (c *Conn) ReadRawFrameHeader() (op Opcode, fin bool, l int, err error) {
+func (c *Conn) ReadRawFrameHeader() (op Opcode, l int, fin bool, err error) {
 	defer c.rmu.Unlock()
 	c.rmu.Lock()
 
 	return c.readFrameHeader()
 }
 
-func (c *Conn) readDataFrameHeader() (op Opcode, fin bool, l int, err error) {
+func (c *Conn) readDataFrameHeader() (op Opcode, l int, fin bool, err error) {
 	for {
-		op, fin, l, err = c.readFrameHeader()
+		op, l, fin, err = c.readFrameHeader()
 		if err != nil {
-			return op, fin, l, err
+			return op, l, fin, err
 		}
 
 		switch op {
 		case FrameContinue, FrameText, FrameBinary:
-			return op, fin, l, nil
+			return op, l, fin, nil
 		case FramePing:
 			err = c.processPing()
 			if err != nil {
-				return op, false, 0, err
+				return op, 0, false, err
 			}
 		case FramePong:
 		case FrameClose:
-			return op, false, 0, c.processClose()
+			return op, 0, false, c.processClose()
 		default:
-			return op, false, 0, errors.New("invalid frame")
+			return op, 0, false, errors.New("invalid frame")
 		}
 	}
 }
 
-func (c *Conn) readFrameHeader() (op Opcode, fin bool, l int, err error) {
+func (c *Conn) readFrameHeader() (op Opcode, l int, fin bool, err error) {
 	if c.readerClosed {
-		return 0, true, 0, io.EOF
+		return 0, 0, true, io.EOF
 	}
 
 	if c.more != 0 {
@@ -142,7 +142,7 @@ func (c *Conn) readFrameHeader() (op Opcode, fin bool, l int, err error) {
 			c.more = l
 			c.i = i
 
-			return h.Opcode(), h.Fin(), l, nil
+			return h.Opcode(), l, h.Fin(), nil
 		}
 
 		n, err := c.read()
@@ -150,7 +150,7 @@ func (c *Conn) readFrameHeader() (op Opcode, fin bool, l int, err error) {
 			continue
 		}
 		if err != nil {
-			return 0, false, l, err
+			return 0, l, false, err
 		}
 	}
 }

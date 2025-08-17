@@ -70,6 +70,25 @@ const (
 	FramePong  Opcode = 0xa
 )
 
+func (op Opcode) String() string {
+	switch op {
+	case FrameContinue:
+		return "continue"
+	case FrameText:
+		return "text"
+	case FrameBinary:
+		return "binary"
+	case FrameClose:
+		return "close"
+	case FramePing:
+		return "ping"
+	case FramePong:
+		return "pong"
+	}
+
+	return fmt.Sprintf("op:0x%x", int(op))
+}
+
 var (
 	//	ErrClosed       = errors.New("attempt to write to closed connection")
 	ErrNotHijacker  = errors.New("response is not hijacker")
