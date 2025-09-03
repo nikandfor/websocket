@@ -24,7 +24,8 @@ type (
 		wmu  sync.Mutex
 		wbuf []byte
 
-		rmu  sync.Mutex
+		//	rmu  sync.Mutex
+
 		rbuf []byte
 
 		st, i, end int // unparsed data in rbuf
@@ -34,6 +35,16 @@ type (
 
 		start int // start of the frame in rbuf, needed for masking offset calculation
 		more  int // more bytes to read in frame
+
+		// end of rmu
+	}
+
+	Frame struct {
+		Opcode Opcode
+		Length int
+		Final  bool
+
+		c *Conn
 	}
 )
 
@@ -42,40 +53,24 @@ const (
 	minReadBufSize     = 0x20
 )
 
-func (c *Conn) ReadContext(ctx context.Context, p []byte) (n int, err error) {
-	if d, ok := c.Conn.(interface{ SetReadDeadline(time.Time) error }); ok {
-		defer Stopper(ctx, d.SetReadDeadline)
-	}
-
-	n, err = c.Read(p)
-	err = FixError(ctx, err)
-
-	return n, err
+func (c *Conn) Read(p []byte) (n int, err error) {
+	return c.ReadContext(nil, p)
 }
 
-func (c *Conn) Read(p []byte) (n int, err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (c *Conn) ReadContext(ctx context.Context, p []byte) (n int, err error) {
+	//	defer c.rmu.Unlock()
+	//	c.rmu.Lock()
 
 	//	defer func(f dbgfn) {
 	//		f(n, err)
 	//	}(c.debug("Read"))
 
-	if c.more != 0 {
-		n, err = c.readFrame(p)
-		if errors.Is(err, io.EOF) {
-			err = nil
-		}
-
-		return n, err
-	}
-
-	_, _, _, err = c.readDataFrameHeader()
+	err = c.waitForDataFrame(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	n, err = c.readFrame(p)
+	n, err = c.readFrame(ctx, p)
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}
@@ -83,23 +78,62 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (c *Conn) ReadFrameHeader() (op Opcode, l int, fin bool, err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (c *Conn) waitForDataFrame(ctx context.Context) error {
+	if c.more != 0 {
+		return nil
+	}
 
-	return c.readDataFrameHeader()
+	_, _, _, err := c.readDataFrameHeader(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (c *Conn) ReadRawFrameHeader() (op Opcode, l int, fin bool, err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (c *Conn) NextFrame(ctx context.Context) (Frame, error) {
+	//	defer c.rmu.Unlock()
+	//	c.rmu.Lock()
 
-	return c.readFrameHeader()
+	op, l, fin, err := c.readDataFrameHeader(ctx)
+	if err != nil {
+		return Frame{}, err
+	}
+
+	f := Frame{
+		Opcode: op,
+		Length: l,
+		Final:  fin,
+
+		c: c,
+	}
+
+	return f, nil
 }
 
-func (c *Conn) readDataFrameHeader() (op Opcode, l int, fin bool, err error) {
+func (c *Conn) NextRawFrame(ctx context.Context) (Frame, error) {
+	//	defer c.rmu.Unlock()
+	//	c.rmu.Lock()
+
+	op, l, fin, err := c.readFrameHeader(ctx)
+	if err != nil {
+		return Frame{}, err
+	}
+
+	f := Frame{
+		Opcode: op,
+		Length: l,
+		Final:  fin,
+
+		c: c,
+	}
+
+	return f, nil
+}
+
+func (c *Conn) readDataFrameHeader(ctx context.Context) (op Opcode, l int, fin bool, err error) {
 	for {
-		op, l, fin, err = c.readFrameHeader()
+		op, l, fin, err = c.readFrameHeader(ctx)
 		if err != nil {
 			return op, l, fin, err
 		}
@@ -114,14 +148,14 @@ func (c *Conn) readDataFrameHeader() (op Opcode, l int, fin bool, err error) {
 			}
 		case FramePong:
 		case FrameClose:
-			return op, 0, false, c.processClose()
+			return op, 0, false, c.processClose(ctx)
 		default:
 			return op, 0, false, errors.New("invalid frame")
 		}
 	}
 }
 
-func (c *Conn) readFrameHeader() (op Opcode, l int, fin bool, err error) {
+func (c *Conn) readFrameHeader(ctx context.Context) (op Opcode, l int, fin bool, err error) {
 	if c.readerClosed {
 		return 0, 0, true, io.EOF
 	}
@@ -145,7 +179,7 @@ func (c *Conn) readFrameHeader() (op Opcode, l int, fin bool, err error) {
 			return h.Opcode(), l, h.Fin(), nil
 		}
 
-		n, err := c.read()
+		n, err := c.read(ctx)
 		if n != 0 && errors.Is(err, io.EOF) {
 			continue
 		}
@@ -155,33 +189,47 @@ func (c *Conn) readFrameHeader() (op Opcode, l int, fin bool, err error) {
 	}
 }
 
-func (c *Conn) ReadFrame(p []byte) (n int, err error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (f Frame) Read(p []byte) (n int, err error) {
+	//	defer f.c.rmu.Unlock()
+	//	f.c.rmu.Lock()
 
-	return c.readFrame(p)
+	return f.c.readFrame(nil, p)
 }
 
-func (c *Conn) AppendReadFrame(b []byte) ([]byte, error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (f Frame) ReadContext(ctx context.Context, p []byte) (n int, err error) {
+	//	defer f.c.rmu.Unlock()
+	//	f.c.rmu.Lock()
 
-	return c.appendFrame(b, c.more)
+	return f.c.readFrame(nil, p)
 }
 
-func (c *Conn) AppendReadFrameLimit(b []byte, limit int) ([]byte, error) {
-	defer c.rmu.Unlock()
-	c.rmu.Lock()
+func (f Frame) ReadAppendTo(ctx context.Context, b []byte) ([]byte, error) {
+	//	defer f.c.rmu.Unlock()
+	//	f.c.rmu.Lock()
 
-	return c.appendFrame(b, min(c.more, limit-len(b)))
+	return f.c.appendFrame(ctx, b, f.c.more)
 }
 
-func (c *Conn) readFrame(p []byte) (int, error) {
-	res, err := c.appendFrame(p[:0], len(p))
+func (f Frame) ReadAppendToLimit(ctx context.Context, b []byte, limit int) ([]byte, error) {
+	//	defer f.c.rmu.Unlock()
+	//	f.c.rmu.Lock()
+
+	return f.c.appendFrame(ctx, b, min(f.c.more, limit-len(b)))
+}
+
+func (f Frame) More() int {
+	//	defer f.c.rmu.Unlock()
+	//	f.c.rmu.Lock()
+
+	return f.c.more
+}
+
+func (c *Conn) readFrame(ctx context.Context, p []byte) (int, error) {
+	res, err := c.appendFrame(ctx, p[:0], len(p))
 	return len(res), err
 }
 
-func (c *Conn) appendFrame(p []byte, more int) (p0 []byte, err error) {
+func (c *Conn) appendFrame(ctx context.Context, p []byte, more int) (p0 []byte, err error) {
 	//	defer func(f dbgfn) {
 	//		f(len(p0), err)
 	//	}(c.debug("appendFrame"))
@@ -209,7 +257,7 @@ func (c *Conn) appendFrame(p []byte, more int) (p0 []byte, err error) {
 				return p[:n], err
 			}
 		default:
-			nread, err := c.read()
+			nread, err := c.read(ctx)
 			if err != nil && !errors.Is(err, io.EOF) || nread == 0 {
 				return p[:n], err
 			}
@@ -250,7 +298,7 @@ func (c *Conn) parseFrameHeader(b []byte, st int, key []byte) (h HeaderBits, l, 
 	return h, l, i
 }
 
-func (c *Conn) processClose() (err error) {
+func (c *Conn) processClose(ctx context.Context) (err error) {
 	c.readerClosed = true
 
 	if c.more == 0 {
@@ -263,7 +311,7 @@ func (c *Conn) processClose() (err error) {
 
 	size := min(c.more, 128)
 
-	c.rbuf, err = c.appendFrame(c.rbuf[:c.end], size)
+	c.rbuf, err = c.appendFrame(ctx, c.rbuf[:c.end], size)
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}
@@ -288,7 +336,7 @@ func (c *Conn) processClose() (err error) {
 	}
 }
 
-func (c *Conn) read() (n int, err error) {
+func (c *Conn) read(ctx context.Context) (n int, err error) {
 	//	defer func(f dbgfn) {
 	//		f(n, err)
 	//	}(c.debug("read"))
@@ -317,8 +365,13 @@ func (c *Conn) read() (n int, err error) {
 		panic(c.end)
 	}
 
+	if d, ok := c.Conn.(interface{ SetReadDeadline(time.Time) error }); ctx != nil && ok {
+		defer Stopper(ctx, d.SetReadDeadline)()
+	}
+
 	n, err = c.Conn.Read(c.rbuf[c.end:])
 	c.end += n
+	err = FixError(ctx, err)
 
 	return n, err
 }
