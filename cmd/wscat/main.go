@@ -129,7 +129,7 @@ func clientRun(c *cli.Command) (err error) {
 		var b []byte
 
 		for {
-			op, fin, l, err := conn.ReadFrameHeader()
+			f, err := conn.NextFrame(ctx)
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -137,20 +137,18 @@ func clientRun(c *cli.Command) (err error) {
 				return errors.Wrap(err, "read header")
 			}
 
-			b, err = conn.AppendReadFrame(b[:0])
+			b, err = f.ReadAppendTo(ctx, b[:0])
 			if err != nil && !errors.Is(err, io.EOF) {
 				return errors.Wrap(err, "read frame")
 			}
 
-			if len(b) != l {
+			if len(b) != f.Length {
 				panic(len(b))
 			}
 
 			if len(b) != 0 && b[len(b)-1] != '\n' {
 				b = append(b, '\n')
 			}
-
-			_, _ = op, fin
 
 			os.Stdout.Write(b)
 		}
@@ -235,7 +233,7 @@ func Echo(ctx context.Context, c *websocket.Conn) error {
 	buf := make([]byte, 10)
 
 	for {
-		op, fin, l, err := c.ReadFrameHeader()
+		f, err := c.NextFrame(ctx)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -243,16 +241,17 @@ func Echo(ctx context.Context, c *websocket.Conn) error {
 			return fmt.Errorf("read frame header: %w", err)
 		}
 
-		tlog.Printw("frame header", "op", op, "fin", fin, "l", l)
+		tlog.Printw("frame header", "op", f.Opcode, "fin", f.Final, "l", f.Length)
 
 		total := 0
+		op := f.Opcode
 
-		for total < l {
-			n, err := c.ReadFrame(buf)
+		for f.More() > 0 {
+			n, err := f.ReadContext(ctx, buf)
 			if n != 0 {
-				tlog.Printw("message", "op", op, "fin", fin, "i", total, "end", total+n, "of", l, "data", buf[:n])
+				tlog.Printw("message", "op", op, "fin", f.Final, "i", total, "end", total+n, "of", f.Length, "data", buf[:n])
 
-				_, err = c.WriteFrame(buf[:n], op, fin && total+n == l)
+				_, err = c.WriteFrame(buf[:n], op, f.Final && total+n == f.Length)
 				if err != nil {
 					return fmt.Errorf("write: %w", err)
 				}

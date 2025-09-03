@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	nikand.dev/go/cli v0.0.0-20250208225017-de7159bfa4ce
-	nikand.dev/go/websocket v0.0.0-20250422004624-fb41411b6e12
+	nikand.dev/go/websocket v0.0.0-20250903111545-010a1d4216c2
 	tlog.app/go/errors v0.20.0
 	tlog.app/go/tlog v0.26.0
 )

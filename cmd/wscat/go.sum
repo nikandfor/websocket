@@ -18,8 +18,8 @@ nikand.dev/go/cli v0.0.0-20250208225017-de7159bfa4ce h1:DoiDaFTlvJY3O7xkNTmQBG59
 nikand.dev/go/cli v0.0.0-20250208225017-de7159bfa4ce/go.mod h1:0FPtnIa1UX9L1EdeoxAlMU+/272FmCEN4K+7X8Chn4Q=
 nikand.dev/go/hacked v0.0.0-20250303011940-bcd287f6db83 h1:9W6JKr4hAg2OuJoFYiMtRUwcLPwrW+I+YrMVk+Uh8VQ=
 nikand.dev/go/hacked v0.0.0-20250303011940-bcd287f6db83/go.mod h1:3/xzwKPKrKRkfShFa8jMa27vTMHQRqzgrkF6L1cdrJw=
-nikand.dev/go/websocket v0.0.0-20250422004624-fb41411b6e12 h1:bWqyQrJeW5bPnzLwwRXWXakQxCKG+nq3LOM8gALw4C0=
-nikand.dev/go/websocket v0.0.0-20250422004624-fb41411b6e12/go.mod h1:UGeKhlaN0K4waugPAwJxdlWw+l4oVtCcXzhNKYCN04M=
+nikand.dev/go/websocket v0.0.0-20250903111545-010a1d4216c2 h1:KTRhxTKC3PDcmXQwSKvQou4R8ho4gCV03ZGV+GtJnSY=
+nikand.dev/go/websocket v0.0.0-20250903111545-010a1d4216c2/go.mod h1:UGeKhlaN0K4waugPAwJxdlWw+l4oVtCcXzhNKYCN04M=
 tlog.app/go/eazy v0.4.2 h1:Pa///lJlpkUUaApgI2A5xwtB+DnFG6ENDOtrRHDJsNk=
 tlog.app/go/eazy v0.4.2/go.mod h1:qk9DSaqsW9Kn4TXRxQn3VZrqmlvrTBSk753g0RQMUy0=
 tlog.app/go/errors v0.20.0 h1:zStmXJ2H5eZjwzYhrbB/I0/y8Zrt2HBgT6Q0H54fp3E=
