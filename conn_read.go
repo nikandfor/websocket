@@ -379,12 +379,18 @@ func (c *Conn) read(ctx context.Context) (n int, err error) {
 func Stopper(ctx context.Context, dead func(time.Time) error) func() {
 	donec := make(chan struct{})
 
+	var mu sync.Mutex
+	var killed bool
+
 	go func() {
 		select {
 		case <-ctx.Done():
 		case <-donec:
 			return
 		}
+
+		defer mu.Unlock()
+		mu.Lock()
 
 		select {
 		case <-donec:
@@ -393,10 +399,19 @@ func Stopper(ctx context.Context, dead func(time.Time) error) func() {
 		}
 
 		_ = dead(time.Unix(1, 0))
+
+		killed = true
 	}()
 
 	return func() {
 		close(donec)
+
+		defer mu.Unlock()
+		mu.Lock()
+
+		if killed {
+			_ = dead(time.Time{})
+		}
 	}
 }
 
