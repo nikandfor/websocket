@@ -59,7 +59,10 @@ func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http
 	var key string
 	h := req.Header
 
-	if v := h.Get("Connection"); !strings.EqualFold(v, "Upgrade") {
+	if req.Method != http.MethodGet {
+		return nil, ErrNotWebsocket
+	}
+	if q := h.Values("Connection"); !hasToken(q, "Upgrade") {
 		return nil, ErrNotWebsocket
 	}
 	if v := h.Get("Upgrade"); !strings.EqualFold(v, "websocket") {
@@ -87,13 +90,11 @@ func (s *Server) Handshake(ctx context.Context, w http.ResponseWriter, req *http
 		return nil, fmt.Errorf("hijack: %w", err)
 	}
 
-	if buf.Reader.Buffered() != 0 || buf.Writer.Buffered() != 0 {
-		return nil, ErrTrailingData
-	}
-
 	wc := &Conn{
 		Conn: c,
 	}
+
+	copyBuffer(wc, buf.Reader)
 
 	return wc, nil
 }

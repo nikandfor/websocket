@@ -8,8 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,11 +34,12 @@ func (c *Client) DialContext(ctx context.Context, rurl string) (*Conn, error) {
 	}
 
 	conn, resp, err := c.Handshake(ctx, req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("handshake: %w", err)
 	}
-
-	_ = resp.Body.Close()
 
 	return conn, nil
 }
@@ -76,12 +75,14 @@ func (c *Client) NewRequest(ctx context.Context, rurl string) (*http.Request, er
 	h.Set("Sec-WebSocket-Version", "13")
 	h.Set("Sec-WebSocket-Key", key64)
 
-	maps.Copy(h, c.Header)
+	for k, v := range c.Header {
+		h[http.CanonicalHeaderKey(k)] = v
+	}
 
 	return req, nil
 }
 
-func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn, resp *http.Response, err error) {
+func (cl *Client) Handshake(ctx context.Context, req *http.Request) (_ *Conn, _ *http.Response, err error) {
 	var d DialerContext
 
 	switch req.URL.Scheme {
@@ -95,7 +96,8 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 
 	host := req.URL.Host
 	if req.URL.Port() == "" {
-		host = net.JoinHostPort(host, req.URL.Scheme)
+		port := csel(req.URL.Scheme == "http", "80", "443")
+		host = net.JoinHostPort(host, port)
 	}
 
 	c, err := d.DialContext(ctx, "tcp", host)
@@ -104,15 +106,16 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 	}
 
 	defer closerOnErr(c, &err)
+	defer Stopper(ctx, c.SetDeadline)()
 
 	err = req.Write(c)
 	if err != nil {
 		return nil, nil, fmt.Errorf("write request: %w", err)
 	}
 
-	r := bufio.NewReader(c)
+	buf := bufio.NewReader(c)
 
-	resp, err = http.ReadResponse(r, req)
+	resp, err := http.ReadResponse(buf, req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
@@ -124,10 +127,10 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 	h := resp.Header
 	accept := secKeyHash(req.Header.Get("Sec-WebSocket-Key"))
 
-	if q := h.Get("Connection"); strings.ToLower(q) != "upgrade" {
+	if q := h.Values("Connection"); !hasToken(q, "Upgrade") {
 		return nil, resp, fmt.Errorf("didn't upgrade: %v", q)
 	}
-	if q := h.Get("Upgrade"); strings.ToLower(q) != "websocket" {
+	if q := h.Get("Upgrade"); !strings.EqualFold(q, "websocket") {
 		return nil, resp, fmt.Errorf("upgraded protocol mismatch: %v", q)
 	}
 	if q := h.Get("Sec-WebSocket-Accept"); q == "" {
@@ -136,32 +139,13 @@ func (cl *Client) Handshake(ctx context.Context, req *http.Request) (conn *Conn,
 		return nil, resp, errors.New("sec-accept mismatch")
 	}
 
-	conn = &Conn{
+	wc := &Conn{
 		Conn: c,
 
 		client: 1,
 	}
 
-	if n := r.Buffered(); n != 0 {
-		conn.rbuf = grow(conn.rbuf, min(n, defaultReadBufSize))
+	copyBuffer(wc, buf)
 
-		m, err := r.Read(conn.rbuf[:n])
-		conn.end = m
-		if err != nil {
-			return nil, resp, errors.New("flush buffer")
-		}
-		if m != n {
-			return nil, resp, fmt.Errorf("flush buffer: read %d of %d", m, n)
-		}
-	}
-
-	return conn, resp, nil
-}
-
-func closerOnErr(c io.Closer, errp *error) {
-	if *errp == nil {
-		return
-	}
-
-	_ = c.Close()
+	return wc, resp, nil
 }

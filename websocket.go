@@ -1,12 +1,14 @@
 package websocket
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 type (
@@ -46,11 +48,12 @@ const (
 const (
 	// first byte.
 	finbit     = 0x80
+	rsvbits    = 0x70
 	opcodeMask = 0xf
 
 	// second byte.
-	masked   = 0x80
-	len7Mask = 0x7f
+	maskedbit = 0x80
+	len7Mask  = 0x7f
 
 	len16 = 128 - 2
 	len64 = 128 - 1
@@ -68,6 +71,11 @@ const (
 	FrameClose Opcode = 0x8
 	FramePing  Opcode = 0x9
 	FramePong  Opcode = 0xa
+)
+
+const (
+	errShortBuf = -1
+	errOverflow = -2
 )
 
 func (op Opcode) String() string {
@@ -90,11 +98,12 @@ func (op Opcode) String() string {
 }
 
 var (
-	//	ErrClosed       = errors.New("attempt to write to closed connection")
+	ErrClosed       = io.ErrClosedPipe
+	ErrNoProgress   = io.ErrNoProgress
 	ErrNotHijacker  = errors.New("response is not hijacker")
 	ErrNotWebsocket = errors.New("not websocket")
 	ErrProtocol     = StatusProtocol
-	ErrTrailingData = errors.New("trailing data in request")
+	ErrUnsupported  = errors.ErrUnsupported
 )
 
 func maskBuf(p []byte, key [4]byte, off int) {
@@ -109,6 +118,9 @@ func MakeHeaderBits(op int, final, masked bool) HeaderBits {
 	h[0] = byte(op) & opcodeMask
 	if final {
 		h[0] |= finbit
+	}
+	if masked {
+		h[1] |= maskedbit
 	}
 
 	return h
@@ -135,23 +147,23 @@ func (f HeaderBits) ParseLen(b []byte, st int) (l, i int) {
 		// l is fine already
 	case l == len16:
 		if i+2 > len(b) {
-			return l, -1
+			return l, errShortBuf
 		}
 
 		l = int(binary.BigEndian.Uint16(b[i:]))
 		i += 2
 	case l == len64:
 		if i+8 > len(b) {
-			return l, -1
+			return l, errShortBuf
 		}
 
 		x := binary.BigEndian.Uint64(b[i:])
+		if x > maxLen64 {
+			return 0, errOverflow
+		}
+
 		l = int(x) //nolint:gosec
 		i += 8
-
-		if uint64(l) != x { //nolint:gosec
-			panic("too big frame")
-		}
 	default:
 		panic(l)
 	}
@@ -180,7 +192,7 @@ func (f HeaderBits) IsDataFrame() bool {
 }
 
 func (f HeaderBits) Masked() bool {
-	return f[1]&masked != 0
+	return f[1]&maskedbit != 0
 }
 
 func (f HeaderBits) len7() int {
@@ -205,6 +217,42 @@ func secKeyHash(key string) string {
 	h.Sum(sum[:0])
 
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func copyBuffer(wc *Conn, b *bufio.Reader) {
+	n := b.Buffered()
+	if n == 0 {
+		return
+	}
+
+	wc.rbuf = grow(wc.rbuf, max(n, defaultReadBufSize))
+
+	_, err := io.ReadFull(b, wc.rbuf[:n])
+	if err != nil {
+		panic(err)
+	}
+
+	wc.end = n
+}
+
+func hasToken(h []string, token string) bool {
+	for _, v := range h {
+		for tok := range strings.FieldsFuncSeq(v, func(r rune) bool { return r == ',' }) {
+			if strings.EqualFold(strings.TrimSpace(tok), token) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func closerOnErr(c io.Closer, errp *error) {
+	if *errp == nil {
+		return
+	}
+
+	_ = c.Close()
 }
 
 func grow(b []byte, n int) []byte {

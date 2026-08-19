@@ -1,9 +1,12 @@
 package websocket
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 )
 
 func (c *Conn) Write(p []byte) (int, error) {
@@ -13,6 +16,10 @@ func (c *Conn) Write(p []byte) (int, error) {
 func (c *Conn) WriteFrame(p []byte, op Opcode, final bool) (int, error) {
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
+
+	if c.writerClosed {
+		return 0, ErrClosed
+	}
 
 	return c.writeFrame(p, op, final)
 }
@@ -34,7 +41,7 @@ func (c *Conn) writeFrame(p []byte, op Opcode, final bool) (int, error) {
 		panic(len(p))
 	}
 
-	b = append(b, byte(op&opcodeMask|finb), c.client*masked|l7)
+	b = append(b, byte(op&opcodeMask|finb), c.client*maskedbit|l7)
 
 	switch l7 {
 	case len16:
@@ -87,9 +94,7 @@ func (c *Conn) Close() (err error) {
 
 	c.writerClosed = true
 
-	c.wbuf = append(c.wbuf, byte(FrameClose|finbit), c.client*masked)
-
-	_, err = c.Conn.Write(c.wbuf[:2])
+	_, err = c.writeFrame(nil, FrameClose, true)
 	if err != nil {
 		return fmt.Errorf("write close frame: %w", err)
 	}
@@ -115,7 +120,6 @@ func (c *Conn) closeWriter(status Status, msg []byte) (err error) {
 	if c.writerClosed {
 		return nil
 	}
-
 	c.writerClosed = true
 
 	if status == 0 {
@@ -131,13 +135,25 @@ func (c *Conn) closeWriter(status Status, msg []byte) (err error) {
 	return err
 }
 
-func (c *Conn) processPing() error {
+func (c *Conn) processPing(ctx context.Context) error {
+	for c.i+c.more > c.end {
+		m, err := c.read(ctx)
+		if m != 0 && errors.Is(err, io.EOF) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	if c.header.Masked() {
+		maskBuf(c.rbuf[c.i:c.i+c.more], c.key, 0)
+	}
+
 	defer c.wmu.Unlock()
 	c.wmu.Lock()
 
-	c.rbuf[c.st] = c.rbuf[c.st]&^opcodeMask | byte(FramePong)
-
-	_, err := c.Conn.Write(c.rbuf[c.st : c.i+c.more])
+	_, err := c.writeFrame(c.rbuf[c.i:c.i+c.more], FramePong, true)
 
 	return err
 }
